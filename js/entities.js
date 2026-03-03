@@ -1,0 +1,488 @@
+// ============================================================
+//  entities.js  –  Player, Enemy, Bullet classes
+// ============================================================
+
+// ── Bullet ──────────────────────────────────────────────────
+class Bullet {
+  constructor(wx, wy, angle, speed, damage, range, owner, pelletSpread=0) {
+    this.wx      = wx;
+    this.wy      = wy;
+    const a      = angle + (Math.random()-0.5)*pelletSpread;
+    this.vx      = Math.cos(a)*speed;
+    this.vy      = Math.sin(a)*speed;
+    this.damage  = damage;
+    this.range   = range;
+    this.owner   = owner;   // 'player' | 'enemy'
+    this.dist    = 0;
+    this.dead    = false;
+  }
+
+  update(world) {
+    this.wx   += this.vx;
+    this.wy   += this.vy;
+    this.dist += Math.hypot(this.vx, this.vy);
+    if(this.dist >= this.range) { this.dead = true; return; }
+    if(!world.isWalkable(this.wx, this.wy)) this.dead = true;
+  }
+
+  draw(ctx, cam) {
+    if(this.dead) return;
+    const sx = this.wx - cam.x;
+    const sy = this.wy - cam.y;
+    ctx.save();
+    ctx.shadowColor = this.owner==='player' ? '#ffe07a' : '#ff6060';
+    ctx.shadowBlur  = 6;
+    ctx.fillStyle   = this.owner==='player' ? '#ffe07a' : '#ff6060';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── Player ──────────────────────────────────────────────────
+class Player {
+  constructor(wx, wy) {
+    this.wx       = wx;
+    this.wy       = wy;
+    this.radius   = 10;
+    this.angle    = 0;      // facing angle (radians)
+
+    this.hp       = CFG.PLAYER_HP;
+    this.maxHp    = CFG.PLAYER_HP;
+    this.stamina  = CFG.STAMINA_MAX;
+    this.alive    = true;
+    this.dead     = false;
+
+    // Loadout slots (populated from bunker/equip screen)
+    this.helm     = 'none';
+    this.armor    = 'none';
+    this.bag      = 'none';
+    this.mainWep  = null;    // weapon key
+    this.secWep   = null;
+    this.activeSlot = 'main'; // 'main'|'secondary'
+
+    // Inventory: array of { id, qty } (bag limited)
+    this.inventory = [];
+
+    // Ammo in active mag
+    this.magAmmo    = {};   // { weaponKey: currentMagCount }
+    this.reserveAmmo= {};   // { ammoType: count }
+
+    // State
+    this.reloading  = false;
+    this.reloadEnd  = 0;
+    this.fireCooldown = 0;
+    this.lastShotTime = 0;
+    this.using        = false;   // using medical
+    this.useEnd       = 0;
+
+    // Extraction
+    this.extracting    = false;
+    this.extractStart  = 0;
+
+    // Stats
+    this.kills = 0;
+    this.cash  = 0;  // in-raid temporary, merged to storage on extract
+  }
+
+  // ── Derived stats ─────────────────────────────────────────
+  get armorVal()  {
+    return (CFG.ARMORS[this.armor]?.armor||0) + (CFG.HELMETS[this.helm]?.armor||0);
+  }
+  get bagSlots()  { return CFG.BAGS[this.bag]?.slots || 0; }
+  get activeWeapon() {
+    const key = this.activeSlot==='main' ? this.mainWep : this.secWep;
+    return key ? CFG.WEAPONS[key] : null;
+  }
+  get activeWeaponKey() {
+    return this.activeSlot==='main' ? this.mainWep : this.secWep;
+  }
+  get speed() {
+    const sprinting = window.INPUT?.sprint && this.stamina > 5;
+    return CFG.PLAYER_SPEED * (sprinting ? CFG.PLAYER_SPRINT_MUL : 1);
+  }
+
+  // ── Movement ─────────────────────────────────────────────
+  move(dx, dy, world) {
+    if(!this.alive || this.reloading || this.using || this.extracting) return;
+
+    const spd = this.speed;
+    const nx  = this.wx + dx*spd;
+    const ny  = this.wy + dy*spd;
+
+    // Separate axis collision
+    if(world.isWalkable(nx, this.wy)) this.wx = nx;
+    if(world.isWalkable(this.wx, ny)) this.wy = ny;
+
+    // Stamina
+    const sprinting = window.INPUT?.sprint && this.stamina > 5 && (dx||dy);
+    if(sprinting) this.stamina = Math.max(0, this.stamina - CFG.STAMINA_DRAIN);
+    else          this.stamina = Math.min(CFG.STAMINA_MAX, this.stamina + CFG.STAMINA_REGEN);
+  }
+
+  // ── Aiming ───────────────────────────────────────────────
+  aimAt(wx, wy) {
+    this.angle = Math.atan2(wy - this.wy, wx - this.wx);
+  }
+
+  // ── Shooting ─────────────────────────────────────────────
+  tryShoot(now, bullets) {
+    const wep = this.activeWeapon;
+    if(!wep || this.reloading || !this.alive) return;
+    if(now - this.lastShotTime < wep.fireRate) return;
+
+    const key = this.activeWeaponKey;
+    if(this.magAmmo[key] === undefined) this.magAmmo[key] = wep.magSize;
+    if(this.magAmmo[key] <= 0) { this.startReload(now); return; }
+
+    this.lastShotTime = now;
+    this.magAmmo[key]--;
+
+    const pellets = wep.pellets || 1;
+    for(let i=0;i<pellets;i++){
+      bullets.push(new Bullet(
+        this.wx, this.wy,
+        this.angle,
+        14,                    // bullet speed px/frame
+        wep.damage,
+        wep.range,
+        'player',
+        wep.spread
+      ));
+    }
+    // Recoil visual (handled in UI)
+    this._recoilTime = now;
+  }
+
+  // ── Reload ───────────────────────────────────────────────
+  startReload(now) {
+    const wep = this.activeWeapon;
+    if(!wep || this.reloading) return;
+    const reserve = this.reserveAmmo[wep.ammoType] || 0;
+    if(reserve <= 0) return;
+    this.reloading = true;
+    this.reloadEnd = now + wep.reloadTime;
+  }
+
+  updateReload(now) {
+    if(!this.reloading) return;
+    if(now >= this.reloadEnd) {
+      this.reloading = false;
+      const wep = this.activeWeapon;
+      if(!wep) return;
+      const key = this.activeWeaponKey;
+      const current = this.magAmmo[key] || 0;
+      const needed  = wep.magSize - current;
+      const reserve = this.reserveAmmo[wep.ammoType] || 0;
+      const fill    = Math.min(needed, reserve);
+      this.magAmmo[key]          = current + fill;
+      this.reserveAmmo[wep.ammoType] = reserve - fill;
+    }
+  }
+
+  // ── Medical use ──────────────────────────────────────────
+  useItem(itemId, now) {
+    const def = CFG.ITEMS[itemId];
+    if(!def || !def.healAmt) return false;
+    // Check inventory
+    const slot = this.inventory.find(s=>s.id===itemId);
+    if(!slot || slot.qty<1) return false;
+    if(this.using) return false;
+    this.using  = true;
+    this.useEnd = now + def.useTime;
+    this._pendingHeal = { itemId, amount: def.healAmt };
+    return true;
+  }
+
+  updateUse(now) {
+    if(!this.using) return;
+    if(now >= this.useEnd){
+      this.using = false;
+      if(this._pendingHeal){
+        this.hp = Math.min(this.maxHp, this.hp + this._pendingHeal.amount);
+        this.removeItem(this._pendingHeal.itemId, 1);
+        this._pendingHeal = null;
+      }
+    }
+  }
+
+  // ── Inventory helpers ────────────────────────────────────
+  addItem(id, qty=1) {
+    // Check bag capacity
+    if(this.inventory.reduce((s,i)=>s+i.qty,0) >= this.bagSlots) return false;
+    const existing = this.inventory.find(i=>i.id===id);
+    if(existing) existing.qty += qty;
+    else this.inventory.push({ id, qty });
+    return true;
+  }
+
+  removeItem(id, qty=1) {
+    const slot = this.inventory.find(i=>i.id===id);
+    if(!slot) return;
+    slot.qty -= qty;
+    if(slot.qty <= 0) this.inventory = this.inventory.filter(i=>i.id!==id);
+  }
+
+  // ── Take damage ──────────────────────────────────────────
+  takeDamage(amount) {
+    const mitigated = Math.max(1, amount - this.armorVal * 0.4);
+    this.hp = Math.max(0, this.hp - mitigated);
+    if(this.hp <= 0) this.die();
+  }
+
+  die() {
+    this.alive = false;
+    this.dead  = true;
+    console.log('[Player] Died. Kills:', this.kills);
+  }
+
+  // ── Switch weapon ────────────────────────────────────────
+  switchWeapon() {
+    this.activeSlot = this.activeSlot==='main' ? 'secondary' : 'main';
+    this.reloading  = false;
+  }
+
+  // ── Draw ─────────────────────────────────────────────────
+  draw(ctx, cam) {
+    const sx = this.wx - cam.x;
+    const sy = this.wy - cam.y;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(2, 4, 10, 6, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = '#3a7d44';
+    ctx.beginPath();
+    ctx.arc(0, 0, this.radius, 0, Math.PI*2);
+    ctx.fill();
+
+    // Armor overlay
+    if(this.armor !== 'none'){
+      ctx.fillStyle = 'rgba(80,100,130,0.5)';
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius-1, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // Helmet
+    if(this.helm !== 'none'){
+      ctx.fillStyle = '#556b2f';
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius-3, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // Direction indicator / gun barrel
+    ctx.strokeStyle = this.reloading ? '#f39c12' : '#ccc';
+    ctx.lineWidth   = 3;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(Math.cos(this.angle)*(this.radius+6), Math.sin(this.angle)*(this.radius+6));
+    ctx.stroke();
+
+    // HP bar above player
+    const barW = 24, barH = 4;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-barW/2, -this.radius-8, barW, barH);
+    ctx.fillStyle = this.hp > 50 ? CFG.UI.safe : CFG.UI.danger;
+    ctx.fillRect(-barW/2, -this.radius-8, barW*(this.hp/this.maxHp), barH);
+
+    // Reloading indicator
+    if(this.reloading){
+      ctx.fillStyle = '#f39c12';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('RELOADING', 0, -this.radius-14);
+    }
+
+    ctx.restore();
+  }
+}
+
+// ── Enemy ────────────────────────────────────────────────────
+class Enemy {
+  constructor(wx, wy, typeName) {
+    this.wx       = wx;
+    this.wy       = wy;
+    this.radius   = 10;
+    this.angle    = Math.random()*Math.PI*2;
+    this.typeName = typeName;
+    const def     = CFG.ENEMY_TYPES[typeName];
+    this.def      = def;
+
+    this.hp       = def.hp;
+    this.maxHp    = def.hp;
+    this.alive    = true;
+    this.dead     = false;
+    this.id       = ++Enemy._uid;
+
+    // AI state: 'patrol' | 'chase' | 'attack' | 'search'
+    this.state       = 'patrol';
+    this.lastShot    = 0;
+    this.alertTimer  = 0;
+    this.patrolTarget= null;
+    this.patrolWait  = 0;
+
+    // Drops
+    this.lootDropped = false;
+  }
+
+  static _uid = 0;
+
+  // ── AI Update ────────────────────────────────────────────
+  update(player, world, bullets, now) {
+    if(!this.alive) return;
+
+    const dx   = player.wx - this.wx;
+    const dy   = player.wy - this.wy;
+    const dist = Math.hypot(dx, dy);
+
+    // Line-of-sight check (simplified: just distance + walkable path sample)
+    const canSee = dist < this.def.sight && player.alive && this._hasLoS(player, world);
+
+    // State transitions
+    if(canSee) {
+      this.state      = dist < this.def.attackRange ? 'attack' : 'chase';
+      this.alertTimer = now + 4000;
+    } else if(now < this.alertTimer) {
+      this.state = 'search';
+    } else {
+      this.state = 'patrol';
+    }
+
+    // Behaviour
+    switch(this.state) {
+      case 'patrol': this._patrol(world, now); break;
+      case 'chase':  this._moveToward(player.wx, player.wy, world); this.angle=Math.atan2(dy,dx); break;
+      case 'search': this._moveToward(player.wx+((Math.random()-.5)*60), player.wy+((Math.random()-.5)*60), world); break;
+      case 'attack':
+        this.angle = Math.atan2(dy,dx);
+        if(now - this.lastShot >= this.def.fireRate){
+          this.lastShot = now;
+          bullets.push(new Bullet(
+            this.wx, this.wy,
+            this.angle + (Math.random()-0.5)*0.18,
+            10, this.def.damage, this.def.attackRange*1.2, 'enemy'
+          ));
+        }
+        break;
+    }
+  }
+
+  _hasLoS(player, world) {
+    // Sample 8 points along line between enemy and player
+    const steps = 8;
+    for(let i=1;i<steps;i++){
+      const t = i/steps;
+      const wx = this.wx + (player.wx-this.wx)*t;
+      const wy = this.wy + (player.wy-this.wy)*t;
+      if(!world.isWalkable(wx,wy)) return false;
+    }
+    return true;
+  }
+
+  _moveToward(tx, ty, world) {
+    const dx = tx-this.wx, dy = ty-this.wy;
+    const d  = Math.hypot(dx,dy);
+    if(d < 4) return;
+    const spd = this.def.speed;
+    const nx  = this.wx + (dx/d)*spd;
+    const ny  = this.wy + (dy/d)*spd;
+    if(world.isWalkable(nx, this.wy)) this.wx = nx;
+    if(world.isWalkable(this.wx, ny)) this.wy = ny;
+    this.angle = Math.atan2(dy,dx);
+  }
+
+  _patrol(world, now) {
+    if(!this.patrolTarget || now > this.patrolWait) {
+      // Pick new random patrol point
+      this.patrolTarget = {
+        x: this.wx + (Math.random()-0.5)*120,
+        y: this.wy + (Math.random()-0.5)*120,
+      };
+      this.patrolWait = now + 3000 + Math.random()*2000;
+    }
+    this._moveToward(this.patrolTarget.x, this.patrolTarget.y, world);
+  }
+
+  takeDamage(amount) {
+    this.hp = Math.max(0, this.hp - amount);
+    if(this.hp <= 0) this.die();
+  }
+
+  die() {
+    this.alive = false;
+    this.dead  = false; // will be set after loot drop handled
+  }
+
+  // Drop loot to world
+  dropLoot(world) {
+    if(this.lootDropped) return;
+    this.lootDropped = true;
+    const table = this.def.lootTable;
+    const count = 1 + Math.floor(Math.random()*2);
+    for(let i=0;i<count;i++){
+      const id = table[Math.floor(Math.random()*table.length)];
+      world.lootItems.push(new WorldItem(
+        this.wx + (Math.random()-0.5)*20,
+        this.wy + (Math.random()-0.5)*20,
+        id
+      ));
+    }
+    this.dead = true;  // fully removed next frame
+  }
+
+  draw(ctx, cam) {
+    if(this.dead) return;
+    const sx = this.wx - cam.x;
+    const sy = this.wy - cam.y;
+    if(sx<-20||sy<-20||sx>cam.vw+20||sy>cam.vh+20) return;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(2,4,10,6,0,0,Math.PI*2);
+    ctx.fill();
+
+    // Body colour from type
+    ctx.fillStyle = this.alive ? this.def.color : '#555';
+    ctx.beginPath();
+    ctx.arc(0, 0, this.radius, 0, Math.PI*2);
+    ctx.fill();
+
+    // Direction
+    ctx.strokeStyle = '#ccc';
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(this.angle)*14, Math.sin(this.angle)*14);
+    ctx.stroke();
+
+    // Alert indicator
+    if(this.state==='attack'||this.state==='chase'){
+      ctx.fillStyle = '#e74c3c';
+      ctx.font      = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('!', 0, -this.radius-4);
+    }
+
+    // HP bar
+    const bw=24,bh=3;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-bw/2,-this.radius-10,bw,bh);
+    ctx.fillStyle = this.hp/this.maxHp > 0.5 ? '#f39c12':'#e74c3c';
+    ctx.fillRect(-bw/2,-this.radius-10,bw*(this.hp/this.maxHp),bh);
+
+    ctx.restore();
+  }
+}

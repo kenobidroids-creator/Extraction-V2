@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Escape From Duckov</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ════════════════════════════════════════════════════════
+       GAME CANVAS — renders the world, HUD, map, etc.
+       ════════════════════════════════════════════════════════ -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ════════════════════════════════════════════════════════
+       BUNKER SCREEN — pre-raid home base
+       ════════════════════════════════════════════════════════ -->
+  <div id="bunker-screen" class="screen" style="display:none;">
+
+    <div class="bunker-header">
+      <div class="bunker-title">ESCAPE FROM <span>DUCK</span>OV</div>
+      <div class="bunker-cash" id="bunker-cash">$0</div>
+    </div>
+
+    <div id="bunker-stats" class="bunker-stats">Raids: 0 | Extractions: 0 | Kills: 0</div>
+
+    <div class="bunker-layout">
+
+      <!-- LOADOUT panel -->
+      <div class="panel">
+        <div class="panel-title">⚔ Loadout</div>
+        <div class="loadout-grid">
+          <div class="loadout-slot" title="Click stash item to assign">
+            <span class="slot-label">Main Weapon</span>
+            <span class="slot-value" id="slot-main">Empty</span>
+          </div>
+          <div class="loadout-slot">
+            <span class="slot-label">Secondary</span>
+            <span class="slot-value" id="slot-sec">Empty</span>
+          </div>
+          <div class="loadout-slot">
+            <span class="slot-label">Helmet</span>
+            <span class="slot-value" id="slot-helm">None</span>
+          </div>
+          <div class="loadout-slot">
+            <span class="slot-label">Armor</span>
+            <span class="slot-value" id="slot-armor">None</span>
+          </div>
+          <div class="loadout-slot" style="grid-column:1/-1">
+            <span class="slot-label">Backpack</span>
+            <span class="slot-value" id="slot-bag">None</span>
+          </div>
+        </div>
+        <p class="tip-line" style="margin-top:10px;">Click items in stash to assign gear to slots</p>
+      </div>
+
+      <!-- STASH panel -->
+      <div class="panel">
+        <div class="panel-title">📦 Stash</div>
+        <div id="stash-grid">
+          <div class="empty-stash">Loading...</div>
+        </div>
+        <p class="tip-line" style="margin-top:8px;">
+          Weapons auto-fill slots &nbsp;|&nbsp; Consumables go into bag
+        </p>
+      </div>
+
+    </div><!-- /.bunker-layout -->
+
+    <!-- Action buttons -->
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="GAME.startRaid()">
+        🎯 ENTER RAID
+      </button>
+      <button class="btn" onclick="GAME.openMarket()">
+        🏪 MARKET
+      </button>
+    </div>
+
+    <div class="tip-line">
+      <span>WASD</span> Move &nbsp;·&nbsp;
+      <span>Mouse</span> Aim &nbsp;·&nbsp;
+      <span>LMB</span> Shoot &nbsp;·&nbsp;
+      <span>R</span> Reload &nbsp;·&nbsp;
+      <span>F</span> Interact/Extract &nbsp;·&nbsp;
+      <span>Q</span> Switch Weapon &nbsp;·&nbsp;
+      <span>H</span> Heal &nbsp;·&nbsp;
+      <span>M</span> Map &nbsp;·&nbsp;
+      <span>Shift</span> Sprint
+    </div>
+
+  </div><!-- /#bunker-screen -->
+
+  <!-- ════════════════════════════════════════════════════════
+       MARKET SCREEN
+       ════════════════════════════════════════════════════════ -->
+  <div id="market-screen" class="screen" style="display:none;">
+
+    <div class="market-header">
+      <div class="market-title">🏪 FLEA MARKET</div>
+      <div class="bunker-cash" id="market-cash">$0</div>
+    </div>
+
+    <div id="market-listings"></div>
+
+    <div class="btn-group">
+      <button class="btn" onclick="GAME.closeMarket()">← Back to Bunker</button>
+    </div>
+
+  </div><!-- /#market-screen -->
+
+  <!-- ════════════════════════════════════════════════════════
+       MOBILE HUD — virtual buttons (portrait + landscape)
+       Shown only during raid on touch devices
+       ════════════════════════════════════════════════════════ -->
+  <div id="mobile-hud">
+
+    <!-- Right side action buttons -->
+    <div class="mobile-actions">
+      <button class="mobile-btn reload" id="btn-reload">↻<br>RELOAD</button>
+      <button class="mobile-btn heal"   id="btn-heal">+<br>HEAL</button>
+      <button class="mobile-btn"        id="btn-switch">⇄<br>SWAP</button>
+      <button class="mobile-btn"        id="btn-interact">F<br>ACT</button>
+      <button class="mobile-btn"        id="btn-map">🗺<br>MAP</button>
+      <button class="mobile-btn"        id="btn-sprint">⚡<br>RUN</button>
+    </div>
+
+  </div><!-- /#mobile-hud -->
+
+  <!-- ════════════════════════════════════════════════════════
+       SCRIPTS — loaded in dependency order
+       ════════════════════════════════════════════════════════ -->
+  <script src="js/config.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+
+</body>
+</html>
