@@ -355,28 +355,62 @@ class WorldItem {
     return CFG.ITEMS[id]?.value || 0;
   }
 
+  // Return the display icon and glow color for a loot id
+  static getIcon(id) {
+    if(id.startsWith('W:')) {
+      const wep = CFG.WEAPONS[id.slice(2)];
+      if(!wep) return { icon: '🔫', col: '#e74c3c' };
+      switch(wep.type) {
+        case 'pistol':  return { icon: '🔫', col: '#e74c3c' };
+        case 'smg':     return { icon: '🔫', col: '#c0392b' };
+        case 'rifle':   return { icon: '🔫', col: '#922b21' };
+        case 'dmr':     return { icon: '🔭', col: '#922b21' };
+        case 'shotgun': return { icon: '🔫', col: '#cb4335' };
+        default:        return { icon: '🔫', col: '#e74c3c' };
+      }
+    }
+    if(id.startsWith('H:')) return { icon: '⛑️',  col: '#7ecfff' };
+    if(id.startsWith('A:')) return { icon: '🦺',  col: '#5dade2' };
+    if(id.startsWith('B:')) return { icon: '🎒',  col: '#9b59b6' };
+
+    const def = CFG.ITEMS[id];
+    if(!def) return { icon: '●', col: '#888' };
+    switch(def.type) {
+      case 'medical':  return { icon: '💊',  col: '#27ae60' };
+      case 'ammo':     return { icon: '🔶',  col: '#f39c12' };
+      case 'currency': return { icon: '💵',  col: '#e8b84b' };
+      case 'junk':     return { icon: '📦',  col: '#7f8c8d' };
+      default:         return { icon: '●',   col: '#aaa' };
+    }
+  }
+
   draw(ctx, cam, time) {
     const sx = this.wx - cam.x;
     const sy = this.wy - cam.y;
-    if(sx<-20||sy<-20||sx>cam.vw+20||sy>cam.vh+20) return;
+    if(sx < -30 || sy < -30 || sx > cam.vw + 30 || sy > cam.vh + 30) return;
 
-    // Bob animation
-    const bob = Math.sin(time*0.003 + this.bobOffset)*3;
+    const bob = Math.sin(time * 0.003 + this.bobOffset) * 3;
+    const { icon, col } = WorldItem.getIcon(this.lootId);
 
-    // Glow
     ctx.save();
-    ctx.shadowColor = '#e8b84b';
-    ctx.shadowBlur  = 8;
-    ctx.fillStyle   = '#e8b84b';
-    ctx.beginPath();
-    ctx.arc(sx, sy+bob, 6, 0, Math.PI*2);
-    ctx.fill();
-    ctx.restore();
 
-    // Item dot
-    ctx.fillStyle = '#fff';
+    // Subtle shadow glow (much reduced)
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 4;
+    // Small background circle (no bright halo)
+    ctx.fillStyle   = col + '28';
     ctx.beginPath();
-    ctx.arc(sx, sy+bob, 3, 0, Math.PI*2);
+    ctx.arc(sx, sy + bob, 10, 0, Math.PI * 2);
     ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Emoji icon centred on position
+    ctx.font      = '14px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(icon, sx, sy + bob);
+    ctx.textBaseline = 'alphabetic';
+
+    ctx.restore();
   }
 }

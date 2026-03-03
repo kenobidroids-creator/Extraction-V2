@@ -12,12 +12,15 @@ const CFG = {
   FPS:         60,
 
   // ── Player ────────────────────────────────────────────────
-  PLAYER_SPEED:      3.5,   // px/frame base
+  PLAYER_SPEED:      180,   // pixels per SECOND (dt-based)
   PLAYER_HP:         100,
-  PLAYER_SPRINT_MUL: 1.7,
+  PLAYER_SPRINT_MUL: 1.65,
   STAMINA_MAX:       100,
   STAMINA_DRAIN:     0.4,
   STAMINA_REGEN:     0.2,
+
+  // ── Bullets ──────────────────────────────────────────────
+  BULLET_SPEED:      520,   // pixels per SECOND
 
   // ── Camera ────────────────────────────────────────────────
   CAMERA_LERP:  0.1,
@@ -36,7 +39,7 @@ const CFG = {
     scavenger: {
       label:    'Scavenger',
       hp:       40,
-      speed:    1.4,
+      speed:    85,   // px/s
       sight:    180,
       attackRange: 140,
       damage:   8,
@@ -48,7 +51,7 @@ const CFG = {
     guard: {
       label:    'Guard',
       hp:       80,
-      speed:    1.7,
+      speed:    105,  // px/s
       sight:    220,
       attackRange: 200,
       damage:   14,
@@ -60,7 +63,7 @@ const CFG = {
     heavy: {
       label:    'Heavy',
       hp:       160,
-      speed:    1.0,
+      speed:    60,   // px/s
       sight:    160,
       attackRange: 120,
       damage:   22,

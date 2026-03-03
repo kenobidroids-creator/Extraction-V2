@@ -4,143 +4,189 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
   <title>Escape From Duckov</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-  <!-- ════════════════════════════════════════════════════════
-       GAME CANVAS — renders the world, HUD, map, etc.
-       ════════════════════════════════════════════════════════ -->
-  <canvas id="game-canvas"></canvas>
+<canvas id="game-canvas"></canvas>
 
-  <!-- ════════════════════════════════════════════════════════
-       BUNKER SCREEN — pre-raid home base
-       ════════════════════════════════════════════════════════ -->
-  <div id="bunker-screen" class="screen" style="display:none;">
+<!-- ══════════════════════════════════════════════════════════
+     BUNKER / LOADOUT SCREEN
+     Left:  equipped slots (character view)
+     Right: stash grid (drag or click to equip)
+     ══════════════════════════════════════════════════════════ -->
+<div id="bunker-screen" class="screen" style="display:none;">
 
-    <div class="bunker-header">
-      <div class="bunker-title">ESCAPE FROM <span>DUCK</span>OV</div>
-      <div class="bunker-cash" id="bunker-cash">$0</div>
+  <!-- Top bar -->
+  <div class="top-bar">
+    <div class="game-title">ESCAPE FROM <span>DUCK</span>OV</div>
+    <div class="top-bar-center">
+      <div id="bunker-stats" class="stat-line"></div>
     </div>
+    <div class="top-bar-right">
+      <span class="cash-label" id="bunker-cash">$0</span>
+      <button class="btn btn-primary raid-btn" onclick="GAME.startRaid()">▶ ENTER RAID</button>
+      <button class="btn" onclick="GAME.openMarket()">🏪 MARKET</button>
+    </div>
+  </div>
 
-    <div id="bunker-stats" class="bunker-stats">Raids: 0 | Extractions: 0 | Kills: 0</div>
+  <!-- Main 3-column layout: Loadout | Bag | Stash -->
+  <div class="bunker-main">
 
-    <div class="bunker-layout">
+    <!-- ── LEFT: Equipment slots ── -->
+    <div class="equip-panel">
+      <div class="panel-title">LOADOUT</div>
 
-      <!-- LOADOUT panel -->
-      <div class="panel">
-        <div class="panel-title">⚔ Loadout</div>
-        <div class="loadout-grid">
-          <div class="loadout-slot" title="Click stash item to assign">
-            <span class="slot-label">Main Weapon</span>
-            <span class="slot-value" id="slot-main">Empty</span>
-          </div>
-          <div class="loadout-slot">
-            <span class="slot-label">Secondary</span>
-            <span class="slot-value" id="slot-sec">Empty</span>
-          </div>
-          <div class="loadout-slot">
-            <span class="slot-label">Helmet</span>
-            <span class="slot-value" id="slot-helm">None</span>
-          </div>
-          <div class="loadout-slot">
-            <span class="slot-label">Armor</span>
-            <span class="slot-value" id="slot-armor">None</span>
-          </div>
-          <div class="loadout-slot" style="grid-column:1/-1">
-            <span class="slot-label">Backpack</span>
-            <span class="slot-value" id="slot-bag">None</span>
+      <div class="equip-slots">
+        <!-- Head -->
+        <div class="eq-row">
+          <div class="eq-slot" id="eq-helm" data-slot="helm" data-accepts="H">
+            <span class="eq-icon">⛑️</span>
+            <span class="eq-label">HEAD</span>
+            <span class="eq-val" id="eq-helm-val">— None —</span>
+            <button class="eq-clear" data-slot="helm" title="Unequip">✕</button>
           </div>
         </div>
-        <p class="tip-line" style="margin-top:10px;">Click items in stash to assign gear to slots</p>
-      </div>
 
-      <!-- STASH panel -->
-      <div class="panel">
-        <div class="panel-title">📦 Stash</div>
-        <div id="stash-grid">
-          <div class="empty-stash">Loading...</div>
+        <!-- Weapons row -->
+        <div class="eq-row eq-row-weapons">
+          <div class="eq-slot eq-slot-wide" id="eq-main" data-slot="mainWep" data-accepts="W-main">
+            <span class="eq-icon">🔫</span>
+            <span class="eq-label">PRIMARY</span>
+            <span class="eq-val" id="eq-main-val">— Empty —</span>
+            <button class="eq-clear" data-slot="mainWep" title="Unequip">✕</button>
+          </div>
+          <div class="eq-slot eq-slot-wide" id="eq-sec" data-slot="secWep" data-accepts="W-sec">
+            <span class="eq-icon">🔫</span>
+            <span class="eq-label">SECONDARY</span>
+            <span class="eq-val" id="eq-sec-val">— Empty —</span>
+            <button class="eq-clear" data-slot="secWep" title="Unequip">✕</button>
+          </div>
         </div>
-        <p class="tip-line" style="margin-top:8px;">
-          Weapons auto-fill slots &nbsp;|&nbsp; Consumables go into bag
-        </p>
+
+        <!-- Armor -->
+        <div class="eq-row">
+          <div class="eq-slot" id="eq-armor" data-slot="armor" data-accepts="A">
+            <span class="eq-icon">🦺</span>
+            <span class="eq-label">ARMOR</span>
+            <span class="eq-val" id="eq-armor-val">— None —</span>
+            <button class="eq-clear" data-slot="armor" title="Unequip">✕</button>
+          </div>
+        </div>
+
+        <!-- Bag -->
+        <div class="eq-row">
+          <div class="eq-slot" id="eq-bag" data-slot="bag" data-accepts="B">
+            <span class="eq-icon">🎒</span>
+            <span class="eq-label">BACKPACK</span>
+            <span class="eq-val" id="eq-bag-val">— None —</span>
+            <button class="eq-clear" data-slot="bag" title="Unequip">✕</button>
+          </div>
+        </div>
+
+        <!-- Stats summary -->
+        <div class="loadout-stats" id="loadout-stats"></div>
+      </div><!-- /.equip-slots -->
+
+      <div class="tip-line" style="margin-top:8px;">
+        Click stash items to equip &nbsp;·&nbsp; ✕ to unequip
       </div>
+    </div><!-- /.equip-panel -->
 
-    </div><!-- /.bunker-layout -->
-
-    <!-- Action buttons -->
-    <div class="btn-group">
-      <button class="btn btn-primary" onclick="GAME.startRaid()">
-        🎯 ENTER RAID
-      </button>
-      <button class="btn" onclick="GAME.openMarket()">
-        🏪 MARKET
-      </button>
+    <!-- ── MIDDLE: Bag contents (items going into raid) ── -->
+    <div class="bag-panel">
+      <div class="panel-title">
+        BAG
+        <span id="bag-slots-label" style="font-size:11px; color:#666; font-family:'Share Tech Mono',monospace; margin-left:8px;">0 / 0</span>
+      </div>
+      <div id="bag-grid" class="bag-grid"></div>
+      <div class="tip-line" style="margin-top:6px;">Click consumables/ammo in stash to pack them · Click bag items to remove</div>
     </div>
 
-    <div class="tip-line">
-      <span>WASD</span> Move &nbsp;·&nbsp;
-      <span>Mouse</span> Aim &nbsp;·&nbsp;
-      <span>LMB</span> Shoot &nbsp;·&nbsp;
-      <span>R</span> Reload &nbsp;·&nbsp;
-      <span>F</span> Interact/Extract &nbsp;·&nbsp;
-      <span>Q</span> Switch Weapon &nbsp;·&nbsp;
-      <span>H</span> Heal &nbsp;·&nbsp;
-      <span>M</span> Map &nbsp;·&nbsp;
-      <span>Shift</span> Sprint
+    <!-- ── RIGHT: Stash ── -->
+    <div class="stash-panel">
+      <div class="panel-title">
+        STASH
+        <span style="font-size:11px; color:#666; font-family:'Share Tech Mono',monospace; margin-left:8px;" id="stash-count"></span>
+      </div>
+      <!-- Filter tabs -->
+      <div class="stash-filters" id="stash-filters">
+        <button class="filter-btn active" data-filter="all">ALL</button>
+        <button class="filter-btn" data-filter="W">WEAPONS</button>
+        <button class="filter-btn" data-filter="H">HELMETS</button>
+        <button class="filter-btn" data-filter="A">ARMOR</button>
+        <button class="filter-btn" data-filter="B">BAGS</button>
+        <button class="filter-btn" data-filter="medical">MEDS</button>
+        <button class="filter-btn" data-filter="ammo">AMMO</button>
+        <button class="filter-btn" data-filter="junk">JUNK</button>
+      </div>
+      <div id="stash-grid" class="stash-grid-new"></div>
     </div>
 
-  </div><!-- /#bunker-screen -->
+  </div><!-- /.bunker-main -->
 
-  <!-- ════════════════════════════════════════════════════════
-       MARKET SCREEN
-       ════════════════════════════════════════════════════════ -->
-  <div id="market-screen" class="screen" style="display:none;">
+  <div class="tip-line keys-hint">
+    <span>WASD</span> Move · <span>Mouse</span> Aim · <span>LMB</span> Shoot · <span>R</span> Reload ·
+    <span>F</span> Pickup/Extract · <span>Q</span> Swap Weapon · <span>H</span> Heal · <span>G</span> Drop · <span>M</span> Map · <span>TAB</span> Bag · <span>Shift</span> Sprint
+  </div>
 
-    <div class="market-header">
-      <div class="market-title">🏪 FLEA MARKET</div>
-      <div class="bunker-cash" id="market-cash">$0</div>
+</div><!-- /#bunker-screen -->
+
+
+<!-- ══════════════════════════════════════════════════════════
+     MARKET SCREEN
+     ══════════════════════════════════════════════════════════ -->
+<div id="market-screen" class="screen" style="display:none;">
+  <div class="top-bar">
+    <div class="game-title" style="color:#27ae60;">🏪 FLEA MARKET</div>
+    <div class="top-bar-right">
+      <span class="cash-label" id="market-cash">$0</span>
+      <button class="btn" onclick="GAME.closeMarket()">← BACK</button>
     </div>
+  </div>
+  <!-- Category filter for market -->
+  <div class="stash-filters" style="max-width:900px; width:100%; margin:0 auto 10px;">
+    <button class="filter-btn active" data-mfilter="all">ALL</button>
+    <button class="filter-btn" data-mfilter="W">WEAPONS</button>
+    <button class="filter-btn" data-mfilter="H">HELMETS</button>
+    <button class="filter-btn" data-mfilter="A">ARMOR</button>
+    <button class="filter-btn" data-mfilter="B">BAGS</button>
+    <button class="filter-btn" data-mfilter="medical">MEDS</button>
+    <button class="filter-btn" data-mfilter="ammo">AMMO</button>
+    <button class="filter-btn" data-mfilter="junk">JUNK</button>
+  </div>
+  <div id="market-listings"></div>
+</div>
 
-    <div id="market-listings"></div>
 
-    <div class="btn-group">
-      <button class="btn" onclick="GAME.closeMarket()">← Back to Bunker</button>
-    </div>
+<!-- ══════════════════════════════════════════════════════════
+     MOBILE HUD (raid only, touch devices)
+     ══════════════════════════════════════════════════════════ -->
+<div id="mobile-hud">
+  <div class="mobile-actions">
+    <button class="mobile-btn reload"  id="btn-reload">↻<br>RELOAD</button>
+    <button class="mobile-btn heal"    id="btn-heal">+<br>HEAL</button>
+    <button class="mobile-btn"         id="btn-switch">⇄<br>SWAP</button>
+    <button class="mobile-btn"         id="btn-interact">F<br>ACT</button>
+    <button class="mobile-btn"         id="btn-map">🗺<br>MAP</button>
+    <button class="mobile-btn"         id="btn-inv">🎒<br>BAG</button>
+    <button class="mobile-btn"         id="btn-drop">🗑<br>DROP</button>
+      <button class="mobile-btn"         id="btn-sprint">⚡<br>RUN</button>
+  </div>
+</div>
 
-  </div><!-- /#market-screen -->
+<!-- Tooltip (shared) -->
+<div id="item-tooltip" class="item-tooltip" style="display:none;"></div>
 
-  <!-- ════════════════════════════════════════════════════════
-       MOBILE HUD — virtual buttons (portrait + landscape)
-       Shown only during raid on touch devices
-       ════════════════════════════════════════════════════════ -->
-  <div id="mobile-hud">
-
-    <!-- Right side action buttons -->
-    <div class="mobile-actions">
-      <button class="mobile-btn reload" id="btn-reload">↻<br>RELOAD</button>
-      <button class="mobile-btn heal"   id="btn-heal">+<br>HEAL</button>
-      <button class="mobile-btn"        id="btn-switch">⇄<br>SWAP</button>
-      <button class="mobile-btn"        id="btn-interact">F<br>ACT</button>
-      <button class="mobile-btn"        id="btn-map">🗺<br>MAP</button>
-      <button class="mobile-btn"        id="btn-sprint">⚡<br>RUN</button>
-    </div>
-
-  </div><!-- /#mobile-hud -->
-
-  <!-- ════════════════════════════════════════════════════════
-       SCRIPTS — loaded in dependency order
-       ════════════════════════════════════════════════════════ -->
-  <script src="js/config.js"></script>
-  <script src="js/storage.js"></script>
-  <script src="js/camera.js"></script>
-  <script src="js/world.js"></script>
-  <script src="js/entities.js"></script>
-  <script src="js/input.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/main.js"></script>
-
+<div id="drag-ghost"></div>
+<script src="js/config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/camera.js"></script>
+<script src="js/world.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/input.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
 </body>
 </html>

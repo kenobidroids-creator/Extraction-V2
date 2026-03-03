@@ -82,7 +82,10 @@ const GAME = {
 
   // ── Main Loop ────────────────────────────────────────────
   _loop(time) {
-    const dt = Math.min(time - this._lastTime, 50); // cap at 50ms
+    const rawDt = time - this._lastTime;
+    // Cap dt at 100ms to prevent huge jumps after tab switch
+    // Convert to seconds for all physics
+    const dt = Math.min(rawDt, 100) / 1000;
     this._lastTime = time;
 
     const ctx = this.ctx;
@@ -134,35 +137,49 @@ const GAME = {
     INPUT.updateMouseWorld();
     INPUT.updateJoystick();
 
-    // Pause
-    if(INPUT.pause) { INPUT.pause=false; this._togglePause(); return; }
+    // Pause toggle (consume once per press)
+    if(INPUT.pause) { INPUT.pause = false; this._togglePause(); return; }
+
+    // Skip all gameplay input if inventory or map open
+    const overlayOpen = INPUT.mapOpen || INPUT.openInv;
 
     // ── Player input ──
-    const { dx, dy } = INPUT.getMovement();
-    this.player.move(dx, dy, this.world);
+    if(!overlayOpen) {
+      const { dx, dy } = INPUT.getMovement();
+      this.player.move(dx, dy, this.world, dt);
 
-    // Aim
-    this.player.aimAt(INPUT.mouseWX, INPUT.mouseWY);
+      // Aim toward mouse/touch world position
+      this.player.aimAt(INPUT.mouseWX, INPUT.mouseWY);
 
-    // Shoot
-    if(INPUT.shoot && this.player.activeWeapon?.auto) {
-      this.player.tryShoot(time, this.bullets);
-    }
-
-    // Single shot (handled on mousedown event — but also check state)
-    if(INPUT._fireOnce) {
-      this.player.tryShoot(time, this.bullets);
+      // Shooting — auto weapons fire while held, semi-auto only on _fireOnce
+      const wep = this.player.activeWeapon;
+      if(wep) {
+        if(wep.auto && INPUT.shoot) {
+          this.player.tryShoot(time, this.bullets);
+        } else if(!wep.auto && INPUT._fireOnce) {
+          this.player.tryShoot(time, this.bullets);
+        }
+      }
+      // Always consume _fireOnce
       INPUT._fireOnce = false;
+
+      // Reload
+      if(INPUT.reload) { INPUT.reload = false; this.player.startReload(time); }
+
+      // Switch weapon
+      if(INPUT.switchWep) { INPUT.switchWep = false; this.player.switchWeapon(); }
+
+      // Use medical
+      if(INPUT.useItem) { INPUT.useItem = false; this._useFirstMedical(time); }
+
+      // Drop first bag item [G]
+      if(INPUT.dropItem) {
+        INPUT.dropItem = false;
+        this._dropFirstBagItem();
+      }
+    } else {
+      INPUT._fireOnce = false; // discard shots while overlay open
     }
-
-    // Reload
-    if(INPUT.reload) { INPUT.reload=false; this.player.startReload(time); }
-
-    // Switch weapon
-    if(INPUT.switchWep) { INPUT.switchWep=false; this.player.switchWeapon(); }
-
-    // Use medical item
-    if(INPUT.useItem) { INPUT.useItem=false; this._useFirstMedical(time); }
 
     // Timers
     this.player.updateReload(time);
@@ -205,7 +222,7 @@ const GAME = {
     this._handleExtraction(time);
 
     // ── Update bullets ──
-    for(const b of this.bullets) b.update(this.world);
+    for(const b of this.bullets) b.update(this.world, dt);
 
     // ── Bullet ↔ enemy collision ──
     for(const b of this.bullets) {
@@ -241,7 +258,7 @@ const GAME = {
     for(const en of this.enemies) {
       if(!en.alive && !en.dead) { en.dropLoot(this.world); continue; }
       if(en.dead) continue;
-      en.update(this.player, this.world, this.bullets, time);
+      en.update(this.player, this.world, this.bullets, time, dt);
     }
 
     // Cull dead entities
@@ -271,7 +288,8 @@ const GAME = {
     UI.drawHUD(ctx, this.player, this.raidTimeLeft, vw, vh, extractProg);
     UI.drawMinimap(ctx, this.world, this.player, vw, vh);
     UI.drawNotifications(ctx, vw, vh);
-    if(UI.showMap) UI.drawMapOverlay(ctx, this.world, this.player, vw, vh);
+    if(INPUT.mapOpen) UI.drawMapOverlay(ctx, this.world, this.player, vw, vh);
+    if(INPUT.openInv)  UI.drawRaidInventory(ctx, this.player, vw, vh);
 
     // Joystick overlay
     INPUT.drawJoystick(ctx);
@@ -335,25 +353,35 @@ const GAME = {
     const id = item.lootId;
     let picked = false;
 
-    // Weapon pickups go to loadout slots if empty
+    // Weapon pickups: fill empty slot first, otherwise bag
     if(id.startsWith('W:')) {
-      const key = id.slice(2);
-      const wep = CFG.WEAPONS[key];
-      if(wep.slot==='main' && !this.player.mainWep) {
+      const key  = id.slice(2);
+      const wep  = CFG.WEAPONS[key];
+      const isSecondary = wep.slot === 'secondary';  // pistols
+      if(!isSecondary && !this.player.mainWep) {
+        // Auto-equip to primary slot
         this.player.mainWep = key;
         this.player.magAmmo[key] = wep.magSize;
+        if(this.player.activeSlot !== 'main') this.player.activeSlot = 'main';
         picked = true;
-        UI.notify(`Equipped ${wep.label} (main)`, '#e8b84b');
-      } else if(wep.slot==='secondary' && !this.player.secWep) {
+        UI.notify(`🔫 Equipped ${wep.label} → Primary`, '#e8b84b');
+      } else if(isSecondary && !this.player.secWep) {
+        // Auto-equip to secondary slot
         this.player.secWep = key;
         this.player.magAmmo[key] = wep.magSize;
         picked = true;
-        UI.notify(`Equipped ${wep.label} (secondary)`, '#e8b84b');
+        UI.notify(`🔫 Equipped ${wep.label} → Secondary`, '#e8b84b');
+      } else if(!isSecondary && !this.player.secWep) {
+        // Primary full but secondary empty — offer it there
+        this.player.secWep = key;
+        this.player.magAmmo[key] = wep.magSize;
+        picked = true;
+        UI.notify(`🔫 Equipped ${wep.label} → Secondary`, '#e8b84b');
       } else {
-        // Add as inventory item (stash it)
+        // Both slots full — add to bag
         picked = this.player.addItem(id, 1);
-        if(picked) UI.notify(`Picked up ${wep.label}`, '#ddd');
-        else UI.notify('Bag full!', '#e74c3c');
+        if(picked) UI.notify(`+ ${wep.label} in bag`, '#ddd');
+        else UI.notify('Bag full! [G] to drop something', '#e74c3c');
       }
     } else if(id.startsWith('H:')) {
       this.player.helm = id.slice(2);
@@ -387,6 +415,22 @@ const GAME = {
       this.world.lootItems = this.world.lootItems.filter(i => i.id !== item.id);
       this.nearbyItem = null;
     }
+  },
+
+  // ── Drop first bag item ─────────────────────────────────
+  _dropFirstBagItem() {
+    const inv = this.player.inventory;
+    if(inv.length === 0) { UI.notify('Bag empty', '#888'); return; }
+    const slot = inv[0];
+    const id   = slot.id;
+    // Spawn on ground
+    this.world.lootItems.push(new WorldItem(
+      this.player.wx + (Math.random()-0.5)*30,
+      this.player.wy + 20,
+      id
+    ));
+    this.player.removeItem(id, 1);
+    UI.notify(`Dropped ${WorldItem.getLabel(id)}`, '#888');
   },
 
   // ── Use first available medical ──────────────────────────
@@ -517,97 +561,425 @@ const GAME = {
     else if(this.state==='paused') { this.state=this.prevState||'raid'; }
   },
 
-  // ── Show Bunker (DOM) ────────────────────────────────────
+  // ══════════════════════════════════════════════════════════
+  //  BUNKER SCREEN
+  // ══════════════════════════════════════════════════════════
+
   _showBunker() {
     this.state = 'bunker';
     this._updateMobileLayout(this.canvas.width, this.canvas.height);
-    const bs = document.getElementById('bunker-screen');
-    const ms = document.getElementById('market-screen');
-    if(bs) { bs.style.display='flex'; this._renderBunkerUI(); }
-    if(ms)   ms.style.display='none';
-    UI.activeScreen = 'bunker';
+    document.getElementById('bunker-screen').style.display = 'flex';
+    document.getElementById('market-screen').style.display = 'none';
+    this._renderBunkerUI();
+    this._initBunkerInteractions();  // bind once each time screen shown
   },
 
-  // ── Render full Bunker UI into DOM ───────────────────────
   _renderBunkerUI() {
-    const data = this.saveData;
-    // Cash
-    const cashEl = document.getElementById('bunker-cash');
-    if(cashEl) cashEl.textContent = `$${data.cash.toLocaleString()}`;
+    const d = this.saveData;
+    const ce = document.getElementById('bunker-cash');
+    if(ce) ce.textContent = `$${d.cash.toLocaleString()}`;
+    const se = document.getElementById('bunker-stats');
+    if(se) se.textContent = `Raids: ${d.stats.totalRaids}  |  Extractions: ${d.stats.totalExtracts}  |  Kills: ${d.stats.totalKills}`;
 
-    // Stats
-    const statsEl = document.getElementById('bunker-stats');
-    if(statsEl) statsEl.innerHTML =
-      `Raids: ${data.stats.totalRaids} &nbsp;|&nbsp; Extractions: ${data.stats.totalExtracts} &nbsp;|&nbsp; Kills: ${data.stats.totalKills}`;
-
-    // Stash
-    this._renderStash();
-    // Loadout
-    this._renderLoadout();
+    this._renderEquipSlots();
+    this._renderBagGrid();
+    this._renderStashGrid();
+    // Re-bind drag targets every render (eq-slots persist but need fresh listeners after rebuild)
+    this._bindEqSlotDrop();
+    this._bindEqClearBtns();
   },
 
-  _renderStash() {
+  // ── Equip slots (left panel) ────────────────────────────
+  _renderEquipSlots() {
+    const ld = this.saveData.loadout;
+
+    const slots = [
+      { domId:'eq-helm',  valId:'eq-helm-val',  key: ld.helm,    cfg: CFG.HELMETS, slotName:'helm'   },
+      { domId:'eq-main',  valId:'eq-main-val',  key: ld.mainWep, cfg: CFG.WEAPONS, slotName:'mainWep'},
+      { domId:'eq-sec',   valId:'eq-sec-val',   key: ld.secWep,  cfg: CFG.WEAPONS, slotName:'secWep' },
+      { domId:'eq-armor', valId:'eq-armor-val', key: ld.armor,   cfg: CFG.ARMORS,  slotName:'armor'  },
+      { domId:'eq-bag',   valId:'eq-bag-val',   key: ld.bag,     cfg: CFG.BAGS,    slotName:'bag'    },
+    ];
+
+    for(const s of slots) {
+      const el    = document.getElementById(s.domId);
+      const valEl = document.getElementById(s.valId);
+      if(!el || !valEl) continue;
+
+      const isFilled = s.key && s.key !== 'none' && s.cfg[s.key];
+      const label    = isFilled ? s.cfg[s.key].label : null;
+
+      valEl.textContent = label || (s.slotName.includes('Wep') ? '— Empty —' : '— None —');
+      valEl.className   = 'eq-val' + (isFilled ? '' : ' empty');
+      el.classList.toggle('filled', !!isFilled);
+    }
+
+    // Stats summary
+    const statsEl = document.getElementById('loadout-stats');
+    if(statsEl) {
+      const armorVal = (CFG.ARMORS[ld.armor]?.armor || 0) + (CFG.HELMETS[ld.helm]?.armor || 0);
+      const bagSlots = CFG.BAGS[ld.bag]?.slots || 0;
+      const packed   = (ld.items || []).reduce((s, i) => s + i.qty, 0);
+      const mainLbl  = ld.mainWep ? `${CFG.WEAPONS[ld.mainWep]?.magSize}rnd` : '—';
+      const secLbl   = ld.secWep  ? `${CFG.WEAPONS[ld.secWep]?.magSize}rnd`  : '—';
+      statsEl.innerHTML = `
+        <div>Armor <span>${armorVal}</span></div>
+        <div>Bag <span>${packed}/${bagSlots}</span></div>
+        <div>Main mag <span>${mainLbl}</span></div>
+        <div>Sec mag <span>${secLbl}</span></div>
+      `;
+    }
+  },
+
+  // ── Bag grid (middle panel) ─────────────────────────────
+  _renderBagGrid() {
+    const el = document.getElementById('bag-grid');
+    if(!el) return;
+    el.innerHTML = '';
+
+    const ld       = this.saveData.loadout;
+    const bagSlots = CFG.BAGS[ld.bag]?.slots || 0;
+    const items    = ld.items || [];
+    const packed   = items.reduce((s, i) => s + i.qty, 0);
+
+    // Slots label
+    const lbl = document.getElementById('bag-slots-label');
+    const bagName = ld.bag && ld.bag !== 'none' ? CFG.BAGS[ld.bag]?.label : 'No bag equipped';
+    if(lbl) lbl.textContent = ld.bag && ld.bag !== 'none'
+      ? `${packed}/${bagSlots} slots  (${bagName})`
+      : `No bag — equip one to carry items`;
+
+    // Flat list of all packed items
+    const flatItems = [];
+    for(const it of items) {
+      for(let q = 0; q < it.qty; q++) flatItems.push(it.id);
+    }
+
+    // Render filled + empty cells
+    for(let i = 0; i < Math.max(bagSlots, flatItems.length); i++) {
+      const id   = i < flatItems.length ? flatItems[i] : null;
+      const cell = document.createElement('div');
+      cell.className = 'bag-cell' + (id ? ' occupied' : (i < bagSlots ? ' empty-slot' : ' empty-slot'));
+
+      if(id) {
+        const { icon } = WorldItem.getIcon(id);
+        const def      = CFG.ITEMS[id];
+        cell.innerHTML = `<span class="cell-icon">${icon}</span><span class="cell-name">${(def?.label || id).slice(0,10)}</span>`;
+        cell.title     = `${def?.label || id} — click to remove`;
+        // Click to remove one from bag
+        cell.addEventListener('click', () => {
+          const idx = ld.items.findIndex(it => it.id === id);
+          if(idx !== -1) {
+            ld.items[idx].qty--;
+            if(ld.items[idx].qty <= 0) ld.items.splice(idx, 1);
+            STORAGE.save(this.saveData);
+            this._renderBunkerUI();
+          }
+        });
+      } else {
+        cell.innerHTML = '<span style="font-size:10px; color:#1a2a1a;">·</span>';
+      }
+      el.appendChild(cell);
+    }
+
+    if(bagSlots === 0) {
+      el.innerHTML = '<div class="empty-stash">Equip a backpack to carry items into raid</div>';
+    }
+  },
+
+  // ── Stash grid (right panel) ────────────────────────────
+  _stashFilter: 'all',
+
+  _renderStashGrid() {
     const el = document.getElementById('stash-grid');
     if(!el) return;
     el.innerHTML = '';
+    const ld    = this.saveData.loadout;
+    const filt  = this._stashFilter;
+    let   count = 0;
+
     for(const item of this.saveData.stash) {
-      const label = WorldItem.getLabel(item.id);
-      const value = WorldItem.getValue(item.id);
-      const div = document.createElement('div');
-      div.className = 'stash-item';
-      div.title     = `${label} — Value: $${value}`;
-      div.innerHTML = `<span class="item-label">${label}</span><span class="item-qty">x${item.qty}</span>`;
-      div.addEventListener('click', () => this._onStashItemClick(item));
-      el.appendChild(div);
+      const id  = item.id;
+
+      // Filter check
+      if(filt !== 'all') {
+        if(filt === 'W' && !id.startsWith('W:'))       continue;
+        if(filt === 'H' && !id.startsWith('H:'))       continue;
+        if(filt === 'A' && !id.startsWith('A:'))       continue;
+        if(filt === 'B' && !id.startsWith('B:'))       continue;
+        if(filt === 'medical' && CFG.ITEMS[id]?.type !== 'medical') continue;
+        if(filt === 'ammo'    && CFG.ITEMS[id]?.type !== 'ammo')    continue;
+        if(filt === 'junk'    && CFG.ITEMS[id]?.type !== 'junk')    continue;
+        if(['W','H','A','B','medical','ammo','junk'].includes(filt)) {
+          // already handled above — skip if none matched
+        }
+      }
+
+      count++;
+      const label = WorldItem.getLabel(id);
+      const value = WorldItem.getValue(id);
+      const { icon, col } = WorldItem.getIcon(id);
+
+      // Category label
+      let cat = 'ITEM';
+      if(id.startsWith('W:'))                     cat = CFG.WEAPONS[id.slice(2)]?.type?.toUpperCase() || 'GUN';
+      else if(id.startsWith('H:'))                cat = 'HELMET';
+      else if(id.startsWith('A:'))                cat = 'ARMOR';
+      else if(id.startsWith('B:'))                cat = 'BAG';
+      else if(CFG.ITEMS[id]?.type === 'medical')  cat = 'MED';
+      else if(CFG.ITEMS[id]?.type === 'ammo')     cat = 'AMMO';
+      else if(CFG.ITEMS[id]?.type === 'currency') cat = 'CASH';
+      else if(CFG.ITEMS[id]?.type === 'junk')     cat = 'JUNK';
+
+      // Equipped check
+      const rawKey    = id.includes(':') ? id.slice(2) : id;
+      const isEquipped = (ld.mainWep === rawKey) || (ld.secWep === rawKey) ||
+                         (ld.helm  === rawKey && ld.helm  !== 'none') ||
+                         (ld.armor === rawKey && ld.armor !== 'none') ||
+                         (ld.bag   === rawKey && ld.bag   !== 'none');
+
+      const card = document.createElement('div');
+      card.className   = 'stash-card' + (isEquipped ? ' equipped' : '');
+      card.draggable   = true;
+      card.dataset.id  = id;
+      card.title       = `${label}\n$${value.toLocaleString()}`;
+      card.innerHTML   = `
+        <span class="card-icon">${icon}</span>
+        <span class="card-cat" style="color:${col}">${cat}</span>
+        <span class="card-name">${label}</span>
+        <span class="card-qty">×${item.qty}</span>
+        ${isEquipped ? '<span class="card-eq-badge">✓</span>' : ''}
+      `;
+
+      // Click to equip/pack
+      card.addEventListener('click', () => this._equipItem(id));
+
+      // Drag start
+      card.addEventListener('dragstart', e => {
+        this._dragId = id;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', id);
+        const ghost = document.getElementById('drag-ghost');
+        if(ghost) { ghost.textContent = label; ghost.style.display = 'block'; }
+      });
+      card.addEventListener('dragend', () => {
+        this._dragId = null;
+        card.classList.remove('dragging');
+        const ghost = document.getElementById('drag-ghost');
+        if(ghost) ghost.style.display = 'none';
+      });
+
+      // Tooltip on hover
+      card.addEventListener('mouseenter', e => this._showTooltip(e, id, label, value, col, cat));
+      card.addEventListener('mouseleave', ()  => this._hideTooltip());
+      card.addEventListener('mousemove',  e  => this._moveTooltip(e));
+
+      el.appendChild(card);
     }
-    if(this.saveData.stash.length === 0) {
-      el.innerHTML = '<div class="empty-stash">Stash empty</div>';
+
+    // Stash count
+    const sc = document.getElementById('stash-count');
+    if(sc) sc.textContent = `${count} item${count !== 1 ? 's' : ''}`;
+
+    if(count === 0) {
+      el.innerHTML = '<div class="empty-stash">Nothing here — visit the Market to buy gear!</div>';
     }
   },
 
-  _renderLoadout() {
+  // ── Tooltip ─────────────────────────────────────────────
+  _showTooltip(e, id, label, value, col, cat) {
+    const tt = document.getElementById('item-tooltip');
+    if(!tt) return;
+    let details = `<div class="tt-name">${label}</div>`;
+    details += `<div class="tt-row"><span>Type:</span> <span>${cat}</span></div>`;
+    details += `<div class="tt-row"><span>Value:</span> <span>$${value.toLocaleString()}</span></div>`;
+    // Weapon stats
+    if(id.startsWith('W:')) {
+      const wep = CFG.WEAPONS[id.slice(2)];
+      if(wep) {
+        details += `<div class="tt-row"><span>Damage:</span><span>${wep.damage}</span></div>`;
+        details += `<div class="tt-row"><span>Fire rate:</span><span>${wep.fireRate}ms</span></div>`;
+        details += `<div class="tt-row"><span>Mag:</span><span>${wep.magSize}rnd</span></div>`;
+        details += `<div class="tt-row"><span>Range:</span><span>${wep.range}px</span></div>`;
+        details += `<div class="tt-row"><span>Ammo:</span><span>${wep.ammoType}</span></div>`;
+      }
+    }
+    // Armor stats
+    if(id.startsWith('A:') || id.startsWith('H:')) {
+      const cfg = id.startsWith('A:') ? CFG.ARMORS[id.slice(2)] : CFG.HELMETS[id.slice(2)];
+      if(cfg) details += `<div class="tt-row"><span>Armor:</span><span>${cfg.armor}</span></div>`;
+    }
+    // Bag stats
+    if(id.startsWith('B:')) {
+      const cfg = CFG.BAGS[id.slice(2)];
+      if(cfg) details += `<div class="tt-row"><span>Slots:</span><span>${cfg.slots}</span></div>`;
+    }
+    // Med stats
+    if(CFG.ITEMS[id]?.healAmt) {
+      details += `<div class="tt-row"><span>Heals:</span><span>+${CFG.ITEMS[id].healAmt} HP</span></div>`;
+    }
+    tt.innerHTML  = details;
+    tt.style.display = 'block';
+    this._moveTooltip(e);
+  },
+  _moveTooltip(e) {
+    const tt = document.getElementById('item-tooltip');
+    if(!tt || tt.style.display === 'none') return;
+    const x = Math.min(e.clientX + 14, window.innerWidth  - 240);
+    const y = Math.min(e.clientY + 14, window.innerHeight - 200);
+    tt.style.left = x + 'px';
+    tt.style.top  = y + 'px';
+  },
+  _hideTooltip() {
+    const tt = document.getElementById('item-tooltip');
+    if(tt) tt.style.display = 'none';
+  },
+
+  // ── Equip / pack item ────────────────────────────────────
+  _equipItem(id) {
     const ld = this.saveData.loadout;
-    const setText = (id, val) => { const e=document.getElementById(id); if(e) e.textContent=val; };
-    setText('slot-main',   ld.mainWep ? CFG.WEAPONS[ld.mainWep]?.label : 'Empty');
-    setText('slot-sec',    ld.secWep  ? CFG.WEAPONS[ld.secWep]?.label  : 'Empty');
-    setText('slot-helm',   ld.helm    !== 'none' ? CFG.HELMETS[ld.helm]?.label  : 'None');
-    setText('slot-armor',  ld.armor   !== 'none' ? CFG.ARMORS[ld.armor]?.label  : 'None');
-    setText('slot-bag',    ld.bag     !== 'none' ? CFG.BAGS[ld.bag]?.label      : 'None');
-  },
-
-  // ── Stash → Loadout assignment ───────────────────────────
-  _onStashItemClick(item) {
-    const id  = item.id;
-    const ld  = this.saveData.loadout;
+    let msg = '', color = '#e8b84b';
 
     if(id.startsWith('W:')) {
       const key = id.slice(2);
       const wep = CFG.WEAPONS[key];
-      if(wep.slot==='main')      { ld.mainWep = key; UI.notify(`Main: ${wep.label}`, '#e8b84b', 1500); }
-      else if(wep.slot==='secondary') { ld.secWep = key; UI.notify(`Secondary: ${wep.label}`, '#e8b84b', 1500); }
+      if(!wep) return;
+      // SMG and rifle → main; pistol → secondary
+      if(wep.type === 'pistol') {
+        ld.secWep = key;
+        msg = `Secondary: ${wep.label}`; color = '#e8b84b';
+      } else {
+        ld.mainWep = key;
+        msg = `Primary: ${wep.label}`; color = '#e8b84b';
+      }
     } else if(id.startsWith('H:')) {
-      ld.helm  = id.slice(2); UI.notify(`Helmet: ${CFG.HELMETS[ld.helm].label}`, '#7ecfff', 1500);
+      ld.helm  = id.slice(2);
+      msg = `Head: ${CFG.HELMETS[ld.helm]?.label}`; color = '#5dade2';
     } else if(id.startsWith('A:')) {
-      ld.armor = id.slice(2); UI.notify(`Armor: ${CFG.ARMORS[ld.armor].label}`, '#7ecfff', 1500);
+      ld.armor = id.slice(2);
+      msg = `Armor: ${CFG.ARMORS[ld.armor]?.label}`; color = '#5dade2';
     } else if(id.startsWith('B:')) {
-      ld.bag   = id.slice(2); UI.notify(`Bag: ${CFG.BAGS[ld.bag].label}`, '#7ecfff', 1500);
+      ld.bag = id.slice(2);
+      msg = `Bag: ${CFG.BAGS[ld.bag]?.label}`; color = '#8e44ad';
     } else {
-      // Consumable → add to raid items
-      const existing = ld.items?.find(i=>i.id===id);
-      if(existing) existing.qty++;
-      else { ld.items = ld.items||[]; ld.items.push({ id, qty:1 }); }
-      UI.notify(`+1 ${WorldItem.getLabel(id)} to loadout`, '#ddd', 1500);
+      // Consumable/ammo → pack into bag
+      const bagSlots = CFG.BAGS[ld.bag]?.slots || 0;
+      const packed   = (ld.items || []).reduce((s, i) => s + i.qty, 0);
+      if(packed >= bagSlots && bagSlots > 0) {
+        UI.notify('Bag is full!', '#e74c3c', 2000);
+        STORAGE.save(this.saveData);
+        this._renderBunkerUI();
+        return;
+      }
+      ld.items = ld.items || [];
+      const ex = ld.items.find(i => i.id === id);
+      if(ex) ex.qty++;
+      else ld.items.push({ id, qty: 1 });
+      msg = `+1 ${WorldItem.getLabel(id)} packed`; color = '#aaa';
     }
+
+    if(msg) UI.notify(msg, color, 1800);
     STORAGE.save(this.saveData);
-    this._renderLoadout();
+    this._renderBunkerUI();
   },
 
-  // ── Market ──────────────────────────────────────────────
+  // ── Unequip slot ─────────────────────────────────────────
+  _unequipSlot(slotName) {
+    const ld = this.saveData.loadout;
+    if(slotName === 'helm')   ld.helm   = 'none';
+    if(slotName === 'armor')  ld.armor  = 'none';
+    if(slotName === 'bag')    { ld.bag = 'none'; ld.items = []; }
+    if(slotName === 'mainWep') ld.mainWep = null;
+    if(slotName === 'secWep')  ld.secWep  = null;
+    UI.notify('Unequipped', '#888', 1200);
+    STORAGE.save(this.saveData);
+    this._renderBunkerUI();
+  },
+
+  // ── Bind all interactive elements once per show ──────────
+  _initBunkerInteractions() {
+    this._bindEqSlotDrop();
+    this._bindEqClearBtns();
+
+    // Stash filter tabs
+    document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn[data-filter]').forEach(b => b.classList.remove('active'));
+        fresh.classList.add('active');
+        this._stashFilter = fresh.dataset.filter;
+        this._renderStashGrid();
+        this._bindEqSlotDrop(); // rebind after stash re-render
+      });
+    });
+
+    // Drag ghost tracking (once only)
+    if(!this._ghostBound) {
+      this._ghostBound = true;
+      document.addEventListener('mousemove', e => {
+        const g = document.getElementById('drag-ghost');
+        if(g && g.style.display !== 'none') {
+          g.style.left = e.clientX + 'px';
+          g.style.top  = e.clientY + 'px';
+        }
+      });
+    }
+  },
+
+  _bindEqSlotDrop() {
+    document.querySelectorAll('.eq-slot').forEach(slot => {
+      // Remove old listeners by cloning
+      const fresh = slot.cloneNode(true);
+      slot.parentNode.replaceChild(fresh, slot);
+      fresh.addEventListener('dragover',  e => { e.preventDefault(); e.stopPropagation(); fresh.classList.add('drag-over'); });
+      fresh.addEventListener('dragleave', e => { fresh.classList.remove('drag-over'); });
+      fresh.addEventListener('drop',      e => {
+        e.preventDefault();
+        e.stopPropagation();
+        fresh.classList.remove('drag-over');
+        const id = e.dataTransfer.getData('text/plain') || this._dragId;
+        if(id) this._equipItem(id);
+      });
+      // Also click-to-equip from stash doesn't need this, but clicking an eq-slot with a
+      // drag-id active (touch) should work too
+    });
+    // Re-bind clear buttons since cloneNode above copies them without listeners
+    this._bindEqClearBtns();
+  },
+
+  _bindEqClearBtns() {
+    document.querySelectorAll('.eq-clear').forEach(btn => {
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', e => {
+        e.stopPropagation();
+        this._unequipSlot(fresh.dataset.slot);
+      });
+    });
+  },
+
+  // ══════════════════════════════════════════════════════════
+  //  MARKET
+  // ══════════════════════════════════════════════════════════
+
   openMarket() {
     document.getElementById('bunker-screen').style.display = 'none';
-    const ms = document.getElementById('market-screen');
-    ms.style.display = 'flex';
+    document.getElementById('market-screen').style.display = 'flex';
+    this._marketFilter = 'all';
     this._renderMarket();
+    // Bind market filter tabs
+    document.querySelectorAll('.filter-btn[data-mfilter]').forEach(btn => {
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn[data-mfilter]').forEach(b => b.classList.remove('active'));
+        fresh.classList.add('active');
+        this._marketFilter = fresh.dataset.mfilter;
+        this._renderMarket();
+      });
+    });
   },
 
   closeMarket() {
@@ -615,70 +987,65 @@ const GAME = {
     this._showBunker();
   },
 
+  _marketFilter: 'all',
+
   _renderMarket() {
     const el   = document.getElementById('market-listings');
     if(!el) return;
     el.innerHTML = '';
-    const data   = this.saveData;
+    const data  = this.saveData;
+    const filt  = this._marketFilter;
 
-    // Build listing: all weapon/gear/item types
-    const listings = [
-      ...Object.entries(CFG.WEAPONS).map(([k,v])=>({ id:'W:'+k, label:v.label, value:v.value })),
-      ...Object.entries(CFG.HELMETS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'H:'+k, label:v.label, value:v.value })),
-      ...Object.entries(CFG.ARMORS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'A:'+k, label:v.label, value:v.value })),
-      ...Object.entries(CFG.BAGS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'B:'+k, label:v.label, value:v.value })),
-      ...Object.entries(CFG.ITEMS).map(([k,v])=>({ id:k, label:v.label, value:v.value })),
+    const allListings = [
+      ...Object.entries(CFG.WEAPONS).map(([k,v])=>({ id:'W:'+k, label:v.label, value:v.value, cat:'W' })),
+      ...Object.entries(CFG.HELMETS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'H:'+k, label:v.label, value:v.value, cat:'H' })),
+      ...Object.entries(CFG.ARMORS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'A:'+k, label:v.label, value:v.value, cat:'A' })),
+      ...Object.entries(CFG.BAGS).filter(([k])=>k!=='none').map(([k,v])=>({ id:'B:'+k, label:v.label, value:v.value, cat:'B' })),
+      ...Object.entries(CFG.ITEMS).map(([k,v])=>({ id:k, label:v.label, value:v.value, cat: v.type })),
     ];
 
-    for(const item of listings) {
+    const filtered = filt === 'all' ? allListings : allListings.filter(i => i.cat === filt || i.id.startsWith(filt + ':'));
+
+    for(const item of filtered) {
       const buyPrice  = Math.floor(item.value * CFG.MARKET_BUY_MUL);
       const sellPrice = item.value;
-      const owned     = data.stash.find(s=>s.id===item.id)?.qty || 0;
+      const owned     = data.stash.find(s => s.id === item.id)?.qty || 0;
+      const { icon }  = WorldItem.getIcon(item.id);
 
       const row = document.createElement('div');
       row.className = 'market-row';
       row.innerHTML = `
-        <span class="market-name">${item.label}</span>
+        <span class="market-name">${icon} ${item.label}</span>
         <span class="market-owned">Own: ${owned}</span>
         <span class="market-buy-price">$${buyPrice.toLocaleString()}</span>
         <button class="btn-buy" data-id="${item.id}" data-price="${buyPrice}">BUY</button>
         <button class="btn-sell" data-id="${item.id}" data-price="${sellPrice}" ${owned<1?'disabled':''}>SELL</button>
       `;
       el.appendChild(row);
-    }
 
-    // Update cash display
-    const cashEl = document.getElementById('market-cash');
-    if(cashEl) cashEl.textContent = `$${data.cash.toLocaleString()}`;
-
-    // Bind buttons
-    el.querySelectorAll('.btn-buy').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id    = btn.dataset.id;
-        const price = parseInt(btn.dataset.price);
-        if(data.cash >= price) {
-          data.cash -= price;
-          STORAGE.addToStash(data, id, 1);
+      row.querySelector('.btn-buy').addEventListener('click', () => {
+        if(data.cash >= buyPrice) {
+          data.cash -= buyPrice;
+          STORAGE.addToStash(data, item.id, 1);
           STORAGE.save(data);
-          UI.notify(`Bought ${WorldItem.getLabel(id)}`, '#2ecc71', 2000);
+          UI.notify(`Bought ${item.label}`, '#27ae60', 2000);
           this._renderMarket();
         } else {
           UI.notify('Not enough cash!', '#e74c3c', 2000);
         }
       });
-    });
-    el.querySelectorAll('.btn-sell').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id    = btn.dataset.id;
-        const price = parseInt(btn.dataset.price);
-        if(STORAGE.removeFromStash(data, id, 1) > 0) {
-          data.cash += price;
+      row.querySelector('.btn-sell').addEventListener('click', () => {
+        if(STORAGE.removeFromStash(data, item.id, 1) > 0) {
+          data.cash += sellPrice;
           STORAGE.save(data);
-          UI.notify(`Sold for $${price.toLocaleString()}`, '#e8b84b', 2000);
+          UI.notify(`Sold for $${sellPrice.toLocaleString()}`, '#e8b84b', 2000);
           this._renderMarket();
         }
       });
-    });
+    }
+
+    const cashEl = document.getElementById('market-cash');
+    if(cashEl) cashEl.textContent = `$${data.cash.toLocaleString()}`;
   },
 };
 

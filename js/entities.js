@@ -1,27 +1,42 @@
 // ============================================================
-//  entities.js  –  Player, Enemy, Bullet classes
+//  entities.js  –  Player, Enemy, Bullet
+//  All movement/physics now use delta-time (dt in seconds)
+//  so speed is frame-rate independent on all devices.
 // ============================================================
 
-// ── Bullet ──────────────────────────────────────────────────
+// ── Bullet ───────────────────────────────────────────────────
 class Bullet {
-  constructor(wx, wy, angle, speed, damage, range, owner, pelletSpread=0) {
-    this.wx      = wx;
-    this.wy      = wy;
-    const a      = angle + (Math.random()-0.5)*pelletSpread;
-    this.vx      = Math.cos(a)*speed;
-    this.vy      = Math.sin(a)*speed;
-    this.damage  = damage;
-    this.range   = range;
-    this.owner   = owner;   // 'player' | 'enemy'
-    this.dist    = 0;
-    this.dead    = false;
+  /**
+   * @param {number} speed  – pixels per second (NOT per frame)
+   */
+  constructor(wx, wy, angle, speed, damage, range, owner, pelletSpread = 0) {
+    this.wx     = wx;
+    this.wy     = wy;
+    const a     = angle + (Math.random() - 0.5) * pelletSpread;
+    // Store unit direction; actual px/s speed applied in update(dt)
+    this.dirX   = Math.cos(a);
+    this.dirY   = Math.sin(a);
+    this.speed  = speed;       // px / second
+    this.damage = damage;
+    this.range  = range;
+    this.owner  = owner;
+    this.dist   = 0;
+    this.dead   = false;
+    // Trail points for visual
+    this._trail = [];
   }
 
-  update(world) {
-    this.wx   += this.vx;
-    this.wy   += this.vy;
-    this.dist += Math.hypot(this.vx, this.vy);
-    if(this.dist >= this.range) { this.dead = true; return; }
+  update(world, dt) {
+    // dt in seconds; speed in px/s
+    const move = this.speed * dt;
+    this._trail.unshift({ x: this.wx, y: this.wy });
+    if(this._trail.length > 5) this._trail.pop();
+
+    this.wx   += this.dirX * move;
+    this.wy   += this.dirY * move;
+    this.dist += move;
+
+    if(this.dist >= this.range)           this.dead = true;
     if(!world.isWalkable(this.wx, this.wy)) this.dead = true;
   }
 
@@ -29,104 +44,121 @@ class Bullet {
     if(this.dead) return;
     const sx = this.wx - cam.x;
     const sy = this.wy - cam.y;
+    // Off-screen cull
+    if(sx < -20 || sy < -20 || sx > cam.vw + 20 || sy > cam.vh + 20) return;
+
+    const isPlayer = this.owner === 'player';
+    const col      = isPlayer ? '#ffe07a' : '#ff5a5a';
+    const r        = isPlayer ? 4 : 4.5;   // enemy bullets slightly bigger
+
     ctx.save();
-    ctx.shadowColor = this.owner==='player' ? '#ffe07a' : '#ff6060';
-    ctx.shadowBlur  = 6;
-    ctx.fillStyle   = this.owner==='player' ? '#ffe07a' : '#ff6060';
+
+    // Trail
+    if(this._trail.length > 1) {
+      ctx.strokeStyle = col + '55';
+      ctx.lineWidth   = r * 1.2;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      for(const p of this._trail) ctx.lineTo(p.x - cam.x, p.y - cam.y);
+      ctx.stroke();
+    }
+
+    // Glow
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = isPlayer ? 8 : 12;
+
+    // Bullet dot
+    ctx.fillStyle = col;
     ctx.beginPath();
-    ctx.arc(sx, sy, 3, 0, Math.PI*2);
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.fill();
+
     ctx.restore();
   }
 }
 
-// ── Player ──────────────────────────────────────────────────
+// ── Player ───────────────────────────────────────────────────
 class Player {
   constructor(wx, wy) {
-    this.wx       = wx;
-    this.wy       = wy;
-    this.radius   = 10;
-    this.angle    = 0;      // facing angle (radians)
+    this.wx    = wx;
+    this.wy    = wy;
+    this.radius = 10;
+    this.angle  = 0;
 
-    this.hp       = CFG.PLAYER_HP;
-    this.maxHp    = CFG.PLAYER_HP;
-    this.stamina  = CFG.STAMINA_MAX;
-    this.alive    = true;
-    this.dead     = false;
+    this.hp     = CFG.PLAYER_HP;
+    this.maxHp  = CFG.PLAYER_HP;
+    this.stamina = CFG.STAMINA_MAX;
+    this.alive  = true;
+    this.dead   = false;
 
-    // Loadout slots (populated from bunker/equip screen)
-    this.helm     = 'none';
-    this.armor    = 'none';
-    this.bag      = 'none';
-    this.mainWep  = null;    // weapon key
-    this.secWep   = null;
-    this.activeSlot = 'main'; // 'main'|'secondary'
+    // Loadout
+    this.helm  = 'none';
+    this.armor = 'none';
+    this.bag   = 'none';
+    this.mainWep    = null;
+    this.secWep     = null;
+    this.activeSlot = 'main';
 
-    // Inventory: array of { id, qty } (bag limited)
-    this.inventory = [];
+    // Inventory: [{ id, qty }]
+    this.inventory   = [];
+    this.magAmmo     = {};   // { weaponKey: currentMag }
+    this.reserveAmmo = {};   // { ammoType: count }
 
-    // Ammo in active mag
-    this.magAmmo    = {};   // { weaponKey: currentMagCount }
-    this.reserveAmmo= {};   // { ammoType: count }
-
-    // State
-    this.reloading  = false;
-    this.reloadEnd  = 0;
-    this.fireCooldown = 0;
-    this.lastShotTime = 0;
-    this.using        = false;   // using medical
-    this.useEnd       = 0;
-
-    // Extraction
+    // Timers
+    this.reloading     = false;
+    this.reloadEnd     = 0;
+    this.lastShotTime  = 0;
+    this.using         = false;
+    this.useEnd        = 0;
+    this._pendingHeal  = null;
     this.extracting    = false;
-    this.extractStart  = 0;
 
     // Stats
     this.kills = 0;
-    this.cash  = 0;  // in-raid temporary, merged to storage on extract
+    this.cash  = 0;
   }
 
-  // ── Derived stats ─────────────────────────────────────────
+  // ── Derived ──────────────────────────────────────────────
   get armorVal()  {
-    return (CFG.ARMORS[this.armor]?.armor||0) + (CFG.HELMETS[this.helm]?.armor||0);
+    return (CFG.ARMORS[this.armor]?.armor  || 0)
+         + (CFG.HELMETS[this.helm]?.armor  || 0);
   }
   get bagSlots()  { return CFG.BAGS[this.bag]?.slots || 0; }
   get activeWeapon() {
-    const key = this.activeSlot==='main' ? this.mainWep : this.secWep;
-    return key ? CFG.WEAPONS[key] : null;
+    const k = this.activeSlot === 'main' ? this.mainWep : this.secWep;
+    return k ? CFG.WEAPONS[k] : null;
   }
   get activeWeaponKey() {
-    return this.activeSlot==='main' ? this.mainWep : this.secWep;
+    return this.activeSlot === 'main' ? this.mainWep : this.secWep;
   }
-  get speed() {
+
+  // ── Move (dt in seconds) ─────────────────────────────────
+  move(dx, dy, world, dt) {
+    if(!this.alive || this.using || this.extracting) return;
+
     const sprinting = window.INPUT?.sprint && this.stamina > 5;
-    return CFG.PLAYER_SPEED * (sprinting ? CFG.PLAYER_SPRINT_MUL : 1);
-  }
+    const spd = CFG.PLAYER_SPEED * (sprinting ? CFG.PLAYER_SPRINT_MUL : 1) * dt;
 
-  // ── Movement ─────────────────────────────────────────────
-  move(dx, dy, world) {
-    if(!this.alive || this.reloading || this.using || this.extracting) return;
+    const nx = this.wx + dx * spd;
+    const ny = this.wy + dy * spd;
 
-    const spd = this.speed;
-    const nx  = this.wx + dx*spd;
-    const ny  = this.wy + dy*spd;
-
-    // Separate axis collision
     if(world.isWalkable(nx, this.wy)) this.wx = nx;
     if(world.isWalkable(this.wx, ny)) this.wy = ny;
 
-    // Stamina
-    const sprinting = window.INPUT?.sprint && this.stamina > 5 && (dx||dy);
-    if(sprinting) this.stamina = Math.max(0, this.stamina - CFG.STAMINA_DRAIN);
-    else          this.stamina = Math.min(CFG.STAMINA_MAX, this.stamina + CFG.STAMINA_REGEN);
+    // Stamina drain / regen (per second)
+    if(sprinting && (dx || dy)) {
+      this.stamina = Math.max(0, this.stamina - CFG.STAMINA_DRAIN * dt * 60);
+    } else {
+      this.stamina = Math.min(CFG.STAMINA_MAX, this.stamina + CFG.STAMINA_REGEN * dt * 60);
+    }
   }
 
-  // ── Aiming ───────────────────────────────────────────────
   aimAt(wx, wy) {
     this.angle = Math.atan2(wy - this.wy, wx - this.wx);
   }
 
-  // ── Shooting ─────────────────────────────────────────────
+  // ── Shoot ────────────────────────────────────────────────
   tryShoot(now, bullets) {
     const wep = this.activeWeapon;
     if(!wep || this.reloading || !this.alive) return;
@@ -138,21 +170,20 @@ class Player {
 
     this.lastShotTime = now;
     this.magAmmo[key]--;
+    this._recoilTime  = now;
 
     const pellets = wep.pellets || 1;
-    for(let i=0;i<pellets;i++){
+    for(let i = 0; i < pellets; i++) {
       bullets.push(new Bullet(
         this.wx, this.wy,
         this.angle,
-        14,                    // bullet speed px/frame
+        CFG.BULLET_SPEED,   // px/s from config
         wep.damage,
         wep.range,
         'player',
         wep.spread
       ));
     }
-    // Recoil visual (handled in UI)
-    this._recoilTime = now;
   }
 
   // ── Reload ───────────────────────────────────────────────
@@ -171,35 +202,33 @@ class Player {
       this.reloading = false;
       const wep = this.activeWeapon;
       if(!wep) return;
-      const key = this.activeWeaponKey;
+      const key     = this.activeWeaponKey;
       const current = this.magAmmo[key] || 0;
       const needed  = wep.magSize - current;
       const reserve = this.reserveAmmo[wep.ammoType] || 0;
       const fill    = Math.min(needed, reserve);
-      this.magAmmo[key]          = current + fill;
+      this.magAmmo[key]              = current + fill;
       this.reserveAmmo[wep.ammoType] = reserve - fill;
     }
   }
 
-  // ── Medical use ──────────────────────────────────────────
+  // ── Use item ─────────────────────────────────────────────
   useItem(itemId, now) {
     const def = CFG.ITEMS[itemId];
-    if(!def || !def.healAmt) return false;
-    // Check inventory
-    const slot = this.inventory.find(s=>s.id===itemId);
-    if(!slot || slot.qty<1) return false;
-    if(this.using) return false;
-    this.using  = true;
-    this.useEnd = now + def.useTime;
+    if(!def?.healAmt) return false;
+    const slot = this.inventory.find(s => s.id === itemId);
+    if(!slot || slot.qty < 1 || this.using) return false;
+    this.using        = true;
+    this.useEnd       = now + def.useTime;
     this._pendingHeal = { itemId, amount: def.healAmt };
     return true;
   }
 
   updateUse(now) {
     if(!this.using) return;
-    if(now >= this.useEnd){
+    if(now >= this.useEnd) {
       this.using = false;
-      if(this._pendingHeal){
+      if(this._pendingHeal) {
         this.hp = Math.min(this.maxHp, this.hp + this._pendingHeal.amount);
         this.removeItem(this._pendingHeal.itemId, 1);
         this._pendingHeal = null;
@@ -207,39 +236,35 @@ class Player {
     }
   }
 
-  // ── Inventory helpers ────────────────────────────────────
-  addItem(id, qty=1) {
-    // Check bag capacity
-    if(this.inventory.reduce((s,i)=>s+i.qty,0) >= this.bagSlots) return false;
-    const existing = this.inventory.find(i=>i.id===id);
-    if(existing) existing.qty += qty;
-    else this.inventory.push({ id, qty });
+  // ── Inventory ────────────────────────────────────────────
+  addItem(id, qty = 1) {
+    const used = this.inventory.reduce((s, i) => s + i.qty, 0);
+    if(used + qty > this.bagSlots) return false;
+    const ex = this.inventory.find(i => i.id === id);
+    if(ex) ex.qty += qty;
+    else   this.inventory.push({ id, qty });
     return true;
   }
 
-  removeItem(id, qty=1) {
-    const slot = this.inventory.find(i=>i.id===id);
+  removeItem(id, qty = 1) {
+    const slot = this.inventory.find(i => i.id === id);
     if(!slot) return;
     slot.qty -= qty;
-    if(slot.qty <= 0) this.inventory = this.inventory.filter(i=>i.id!==id);
+    if(slot.qty <= 0) this.inventory = this.inventory.filter(i => i.id !== id);
   }
 
-  // ── Take damage ──────────────────────────────────────────
+  // ── Damage ───────────────────────────────────────────────
   takeDamage(amount) {
-    const mitigated = Math.max(1, amount - this.armorVal * 0.4);
-    this.hp = Math.max(0, this.hp - mitigated);
+    const mit = Math.max(1, amount - this.armorVal * 0.4);
+    this.hp = Math.max(0, this.hp - mit);
+    this._hitFlash = performance.now();
     if(this.hp <= 0) this.die();
   }
 
-  die() {
-    this.alive = false;
-    this.dead  = true;
-    console.log('[Player] Died. Kills:', this.kills);
-  }
+  die() { this.alive = false; this.dead = true; }
 
-  // ── Switch weapon ────────────────────────────────────────
   switchWeapon() {
-    this.activeSlot = this.activeSlot==='main' ? 'secondary' : 'main';
+    this.activeSlot = this.activeSlot === 'main' ? 'secondary' : 'main';
     this.reloading  = false;
   }
 
@@ -251,103 +276,109 @@ class Player {
     ctx.save();
     ctx.translate(sx, sy);
 
+    // Hit flash
+    const hitAge = performance.now() - (this._hitFlash || 0);
+    if(hitAge < 120) {
+      ctx.shadowColor = '#e74c3c';
+      ctx.shadowBlur  = 20;
+    }
+
     // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(2, 4, 10, 6, 0, 0, Math.PI*2);
-    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.beginPath(); ctx.ellipse(2, 5, 10, 5, 0, 0, Math.PI * 2); ctx.fill();
 
     // Body
     ctx.fillStyle = '#3a7d44';
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, 0, Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
 
     // Armor overlay
-    if(this.armor !== 'none'){
-      ctx.fillStyle = 'rgba(80,100,130,0.5)';
-      ctx.beginPath();
-      ctx.arc(0, 0, this.radius-1, 0, Math.PI*2);
-      ctx.fill();
+    if(this.armor !== 'none') {
+      ctx.fillStyle = 'rgba(80,105,140,0.55)';
+      ctx.beginPath(); ctx.arc(0, 0, this.radius - 1, 0, Math.PI * 2); ctx.fill();
     }
 
     // Helmet
-    if(this.helm !== 'none'){
+    if(this.helm !== 'none') {
       ctx.fillStyle = '#556b2f';
-      ctx.beginPath();
-      ctx.arc(0, 0, this.radius-3, 0, Math.PI*2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(0, -2, this.radius - 4, 0, Math.PI * 2); ctx.fill();
     }
 
-    // Direction indicator / gun barrel
+    // Gun barrel
     ctx.strokeStyle = this.reloading ? '#f39c12' : '#ccc';
     ctx.lineWidth   = 3;
+    ctx.lineCap     = 'round';
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.cos(this.angle)*(this.radius+6), Math.sin(this.angle)*(this.radius+6));
+    ctx.moveTo(Math.cos(this.angle) * 4, Math.sin(this.angle) * 4);
+    ctx.lineTo(Math.cos(this.angle) * (this.radius + 8), Math.sin(this.angle) * (this.radius + 8));
     ctx.stroke();
 
-    // HP bar above player
-    const barW = 24, barH = 4;
-    ctx.fillStyle = '#333';
-    ctx.fillRect(-barW/2, -this.radius-8, barW, barH);
-    ctx.fillStyle = this.hp > 50 ? CFG.UI.safe : CFG.UI.danger;
-    ctx.fillRect(-barW/2, -this.radius-8, barW*(this.hp/this.maxHp), barH);
+    // Muzzle flash
+    const recoilAge = performance.now() - (this._recoilTime || 0);
+    if(recoilAge < 60) {
+      ctx.fillStyle   = 'rgba(255,230,100,0.8)';
+      ctx.shadowColor = '#ffe07a'; ctx.shadowBlur = 10;
+      const mx = Math.cos(this.angle) * (this.radius + 10);
+      const my = Math.sin(this.angle) * (this.radius + 10);
+      ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill();
+    }
 
-    // Reloading indicator
-    if(this.reloading){
-      ctx.fillStyle = '#f39c12';
-      ctx.font = 'bold 10px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('RELOADING', 0, -this.radius-14);
+    // HP bar
+    const bw = 24, bh = 4;
+    ctx.shadowBlur  = 0;
+    ctx.fillStyle   = '#222';
+    ctx.fillRect(-bw / 2, -this.radius - 10, bw, bh);
+    ctx.fillStyle   = this.hp > 50 ? '#27ae60' : this.hp > 25 ? '#f39c12' : '#e74c3c';
+    ctx.fillRect(-bw / 2, -this.radius - 10, bw * (this.hp / this.maxHp), bh);
+
+    // Reload ring
+    if(this.reloading) {
+      const prog  = 1 - Math.max(0, (this.reloadEnd - performance.now()) / (this.activeWeapon?.reloadTime || 2000));
+      ctx.strokeStyle = '#f39c12'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius + 4, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+      ctx.stroke();
     }
 
     ctx.restore();
   }
 }
 
-// ── Enemy ────────────────────────────────────────────────────
+// ── Enemy ─────────────────────────────────────────────────────
 class Enemy {
   constructor(wx, wy, typeName) {
     this.wx       = wx;
     this.wy       = wy;
     this.radius   = 10;
-    this.angle    = Math.random()*Math.PI*2;
+    this.angle    = Math.random() * Math.PI * 2;
     this.typeName = typeName;
-    const def     = CFG.ENEMY_TYPES[typeName];
-    this.def      = def;
+    this.def      = CFG.ENEMY_TYPES[typeName];
 
-    this.hp       = def.hp;
-    this.maxHp    = def.hp;
+    this.hp       = this.def.hp;
+    this.maxHp    = this.def.hp;
     this.alive    = true;
     this.dead     = false;
     this.id       = ++Enemy._uid;
 
-    // AI state: 'patrol' | 'chase' | 'attack' | 'search'
     this.state       = 'patrol';
     this.lastShot    = 0;
     this.alertTimer  = 0;
-    this.patrolTarget= null;
-    this.patrolWait  = 0;
-
-    // Drops
-    this.lootDropped = false;
+    this.patrolTarget = null;
+    this.patrolWait   = 0;
+    this.lootDropped  = false;
+    this._hitFlash    = 0;
   }
 
   static _uid = 0;
 
-  // ── AI Update ────────────────────────────────────────────
-  update(player, world, bullets, now) {
+  // ── AI Update (dt in seconds) ────────────────────────────
+  update(player, world, bullets, now, dt) {
     if(!this.alive) return;
 
     const dx   = player.wx - this.wx;
     const dy   = player.wy - this.wy;
     const dist = Math.hypot(dx, dy);
-
-    // Line-of-sight check (simplified: just distance + walkable path sample)
     const canSee = dist < this.def.sight && player.alive && this._hasLoS(player, world);
 
-    // State transitions
     if(canSee) {
       this.state      = dist < this.def.attackRange ? 'attack' : 'chase';
       this.alertTimer = now + 4000;
@@ -357,19 +388,30 @@ class Enemy {
       this.state = 'patrol';
     }
 
-    // Behaviour
     switch(this.state) {
-      case 'patrol': this._patrol(world, now); break;
-      case 'chase':  this._moveToward(player.wx, player.wy, world); this.angle=Math.atan2(dy,dx); break;
-      case 'search': this._moveToward(player.wx+((Math.random()-.5)*60), player.wy+((Math.random()-.5)*60), world); break;
+      case 'patrol': this._patrol(world, now, dt); break;
+      case 'chase':
+        this._moveToward(player.wx, player.wy, world, dt);
+        this.angle = Math.atan2(dy, dx);
+        break;
+      case 'search':
+        this._moveToward(
+          player.wx + (Math.random() - 0.5) * 80,
+          player.wy + (Math.random() - 0.5) * 80,
+          world, dt
+        );
+        break;
       case 'attack':
-        this.angle = Math.atan2(dy,dx);
-        if(now - this.lastShot >= this.def.fireRate){
+        this.angle = Math.atan2(dy, dx);
+        if(now - this.lastShot >= this.def.fireRate) {
           this.lastShot = now;
           bullets.push(new Bullet(
             this.wx, this.wy,
-            this.angle + (Math.random()-0.5)*0.18,
-            10, this.def.damage, this.def.attackRange*1.2, 'enemy'
+            this.angle + (Math.random() - 0.5) * 0.2,
+            CFG.BULLET_SPEED * 0.85,   // slightly slower than player
+            this.def.damage,
+            this.def.attackRange * 1.3,
+            'enemy'
           ));
         }
         break;
@@ -377,111 +419,114 @@ class Enemy {
   }
 
   _hasLoS(player, world) {
-    // Sample 8 points along line between enemy and player
-    const steps = 8;
-    for(let i=1;i<steps;i++){
-      const t = i/steps;
-      const wx = this.wx + (player.wx-this.wx)*t;
-      const wy = this.wy + (player.wy-this.wy)*t;
-      if(!world.isWalkable(wx,wy)) return false;
+    const steps = 10;
+    for(let i = 1; i < steps; i++) {
+      const t = i / steps;
+      if(!world.isWalkable(
+        this.wx + (player.wx - this.wx) * t,
+        this.wy + (player.wy - this.wy) * t
+      )) return false;
     }
     return true;
   }
 
-  _moveToward(tx, ty, world) {
-    const dx = tx-this.wx, dy = ty-this.wy;
-    const d  = Math.hypot(dx,dy);
+  _moveToward(tx, ty, world, dt) {
+    const dx = tx - this.wx, dy = ty - this.wy;
+    const d  = Math.hypot(dx, dy);
     if(d < 4) return;
-    const spd = this.def.speed;
-    const nx  = this.wx + (dx/d)*spd;
-    const ny  = this.wy + (dy/d)*spd;
+    const spd  = this.def.speed * dt;
+    const nx   = this.wx + (dx / d) * spd;
+    const ny   = this.wy + (dy / d) * spd;
     if(world.isWalkable(nx, this.wy)) this.wx = nx;
     if(world.isWalkable(this.wx, ny)) this.wy = ny;
-    this.angle = Math.atan2(dy,dx);
+    this.angle = Math.atan2(dy, dx);
   }
 
-  _patrol(world, now) {
+  _patrol(world, now, dt) {
     if(!this.patrolTarget || now > this.patrolWait) {
-      // Pick new random patrol point
       this.patrolTarget = {
-        x: this.wx + (Math.random()-0.5)*120,
-        y: this.wy + (Math.random()-0.5)*120,
+        x: this.wx + (Math.random() - 0.5) * 140,
+        y: this.wy + (Math.random() - 0.5) * 140,
       };
-      this.patrolWait = now + 3000 + Math.random()*2000;
+      this.patrolWait = now + 3000 + Math.random() * 2000;
     }
-    this._moveToward(this.patrolTarget.x, this.patrolTarget.y, world);
+    this._moveToward(this.patrolTarget.x, this.patrolTarget.y, world, dt);
   }
 
   takeDamage(amount) {
     this.hp = Math.max(0, this.hp - amount);
+    this._hitFlash = performance.now();
     if(this.hp <= 0) this.die();
   }
 
-  die() {
-    this.alive = false;
-    this.dead  = false; // will be set after loot drop handled
-  }
+  die() { this.alive = false; }
 
-  // Drop loot to world
   dropLoot(world) {
     if(this.lootDropped) return;
     this.lootDropped = true;
     const table = this.def.lootTable;
-    const count = 1 + Math.floor(Math.random()*2);
-    for(let i=0;i<count;i++){
-      const id = table[Math.floor(Math.random()*table.length)];
+    const count = 1 + Math.floor(Math.random() * 2);
+    for(let i = 0; i < count; i++) {
+      const id = table[Math.floor(Math.random() * table.length)];
       world.lootItems.push(new WorldItem(
-        this.wx + (Math.random()-0.5)*20,
-        this.wy + (Math.random()-0.5)*20,
+        this.wx + (Math.random() - 0.5) * 24,
+        this.wy + (Math.random() - 0.5) * 24,
         id
       ));
     }
-    this.dead = true;  // fully removed next frame
+    this.dead = true;
   }
 
   draw(ctx, cam) {
     if(this.dead) return;
     const sx = this.wx - cam.x;
     const sy = this.wy - cam.y;
-    if(sx<-20||sy<-20||sx>cam.vw+20||sy>cam.vh+20) return;
+    if(sx < -20 || sy < -20 || sx > cam.vw + 20 || sy > cam.vh + 20) return;
 
     ctx.save();
     ctx.translate(sx, sy);
 
+    // Hit flash
+    const hitAge = performance.now() - this._hitFlash;
+    if(hitAge < 120) { ctx.shadowColor = '#fff'; ctx.shadowBlur = 16; }
+
     // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(2,4,10,6,0,0,Math.PI*2);
-    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.beginPath(); ctx.ellipse(2, 5, 10, 5, 0, 0, Math.PI * 2); ctx.fill();
 
-    // Body colour from type
-    ctx.fillStyle = this.alive ? this.def.color : '#555';
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, 0, Math.PI*2);
-    ctx.fill();
-
-    // Direction
-    ctx.strokeStyle = '#ccc';
-    ctx.lineWidth   = 2;
-    ctx.beginPath();
-    ctx.moveTo(0,0);
-    ctx.lineTo(Math.cos(this.angle)*14, Math.sin(this.angle)*14);
-    ctx.stroke();
+    // Body
+    ctx.shadowBlur = 0;
+    ctx.fillStyle  = this.alive ? this.def.color : '#444';
+    ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
 
     // Alert indicator
-    if(this.state==='attack'||this.state==='chase'){
-      ctx.fillStyle = '#e74c3c';
-      ctx.font      = 'bold 14px monospace';
+    if(this.state === 'attack' || this.state === 'chase') {
+      ctx.fillStyle  = '#e74c3c';
+      ctx.shadowColor = '#e74c3c'; ctx.shadowBlur = 6;
+      ctx.font       = 'bold 13px monospace';
+      ctx.textAlign  = 'center';
+      ctx.fillText('!', 0, -this.radius - 4);
+      ctx.shadowBlur = 0;
+    } else if(this.state === 'search') {
+      ctx.fillStyle = '#f39c12';
+      ctx.font      = 'bold 11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('!', 0, -this.radius-4);
+      ctx.fillText('?', 0, -this.radius - 4);
     }
 
+    // Barrel
+    ctx.strokeStyle = '#bbb'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(this.angle) * 4, Math.sin(this.angle) * 4);
+    ctx.lineTo(Math.cos(this.angle) * 14, Math.sin(this.angle) * 14);
+    ctx.stroke();
+
     // HP bar
-    const bw=24,bh=3;
-    ctx.fillStyle = '#333';
-    ctx.fillRect(-bw/2,-this.radius-10,bw,bh);
-    ctx.fillStyle = this.hp/this.maxHp > 0.5 ? '#f39c12':'#e74c3c';
-    ctx.fillRect(-bw/2,-this.radius-10,bw*(this.hp/this.maxHp),bh);
+    const bw = 24, bh = 3;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-bw / 2, -this.radius - 8, bw, bh);
+    ctx.fillStyle = this.hp / this.maxHp > 0.5 ? '#f39c12' : '#e74c3c';
+    ctx.fillRect(-bw / 2, -this.radius - 8, bw * (this.hp / this.maxHp), bh);
 
     ctx.restore();
   }
